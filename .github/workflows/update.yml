@@ -1,0 +1,74 @@
+name: Update
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "37 * * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Check for release
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          current=$(perl -ne 'print "$1\n" if /version = "([^"]+)";/' flake.nix)
+          tag=$(gh api repos/agent-sh/computer-use-linux/releases/latest --jq .tag_name)
+          latest=${tag#v}
+          [ -n "$current" ] && [ -n "$latest" ]
+          {
+            echo "latest=$latest"
+            if [ "$current" != "$latest" ]; then
+              echo "update_needed=true"
+            else
+              echo "update_needed=false"
+            fi
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Install Nix
+        if: steps.check.outputs.update_needed == 'true'
+        uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          determinate: false
+
+      - name: Update package
+        if: steps.check.outputs.update_needed == 'true'
+        env:
+          VERSION: ${{ steps.check.outputs.latest }}
+        run: |
+          set -euo pipefail
+          url="https://github.com/agent-sh/computer-use-linux/releases/download/v$VERSION/computer-use-linux-x86_64-unknown-linux-gnu"
+          hash=$(nix store prefetch-file --hash-type sha256 --json "$url" | jq -er .hash)
+          HASH="$hash" perl -0pi -e '
+            s/version = "[^"]+";/version = "$ENV{VERSION}";/;
+            s/hash = "[^"]+";/hash = "$ENV{HASH}";/;
+          ' flake.nix
+
+      - name: Build package
+        if: steps.check.outputs.update_needed == 'true'
+        run: nix build .#computer-use-linux --no-link --max-jobs 1 --cores 2
+
+      - name: Commit update
+        if: steps.check.outputs.update_needed == 'true'
+        env:
+          VERSION: ${{ steps.check.outputs.latest }}
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add flake.nix
+          git commit -m "updated computer use to $VERSION"
+          git push
