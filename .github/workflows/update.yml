@@ -4,6 +4,7 @@ on:
   workflow_dispatch:
   schedule:
     - cron: "37 * * * *"
+    - cron: "59 8 * * 1"
 
 permissions:
   contents: write
@@ -14,15 +15,18 @@ concurrency:
 
 jobs:
   update:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
 
       - name: Check for release
         id: check
         env:
           GH_TOKEN: ${{ github.token }}
+          REFRESH_INPUTS: ${{ github.event_name == 'workflow_dispatch' || github.event.schedule == '59 8 * * 1' }}
         run: |
           set -euo pipefail
           current=$(perl -ne 'print "$1\n" if /version = "([^"]+)";/' flake.nix)
@@ -31,7 +35,8 @@ jobs:
           [ -n "$current" ] && [ -n "$latest" ]
           {
             echo "latest=$latest"
-            if [ "$current" != "$latest" ]; then
+            [ "$current" = "$latest" ] || echo "release_changed=true"
+            if [ "$current" != "$latest" ] || [ "$REFRESH_INPUTS" = true ]; then
               echo "update_needed=true"
             else
               echo "update_needed=false"
@@ -45,7 +50,7 @@ jobs:
           determinate: false
 
       - name: Update package
-        if: steps.check.outputs.update_needed == 'true'
+        if: steps.check.outputs.release_changed == 'true'
         env:
           VERSION: ${{ steps.check.outputs.latest }}
         run: |
@@ -57,18 +62,31 @@ jobs:
             s/hash = "[^"]+";/hash = "$ENV{HASH}";/;
           ' flake.nix
 
-      - name: Build package
+      - name: Update inputs
+        id: update
         if: steps.check.outputs.update_needed == 'true'
-        run: nix build .#computer-use-linux --no-link --max-jobs 1 --cores 2
+        run: |
+          set -euo pipefail
+          nix flake update --accept-flake-config
+          if git diff --quiet -- flake.nix flake.lock; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            nix flake check --no-build --no-update-lock-file --accept-flake-config
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build package
+        if: steps.update.outputs.changed == 'true'
+        run: nix build .#computer-use-linux --no-link --no-update-lock-file --max-jobs 1 --cores 2
 
       - name: Commit update
-        if: steps.check.outputs.update_needed == 'true'
+        if: steps.update.outputs.changed == 'true'
         env:
-          VERSION: ${{ steps.check.outputs.latest }}
+          UPDATE_BRANCH: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add flake.nix
-          git commit -m "updated computer use to $VERSION"
-          git push
+          git add flake.nix flake.lock
+          git commit -m "updated computer use and nix inputs"
+          git push origin "HEAD:$UPDATE_BRANCH"
