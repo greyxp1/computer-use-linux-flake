@@ -6,12 +6,12 @@
   outputs = {nixpkgs, ...}: let
     system = "x86_64-linux";
     pkgs = nixpkgs.legacyPackages.${system};
-    version = "0.7.27";
+    version = "0.7.28";
     computerUse = pkgs.callPackage ./package.nix {
       inherit version;
       src = pkgs.fetchurl {
         url = "https://github.com/agent-sh/computer-use-linux/releases/download/v${version}/computer-use-linux-x86_64-unknown-linux-gnu";
-        hash = "sha256-MlIXSPHHRo2ysaAgePaG+WH4ZoC26blaEqBKJgc9rjY=";
+        hash = "sha256-vzxuv1YJAgcGf5BxQMUiBLrtlODnERk76OII9ee1qfo=";
       };
     };
   in {
